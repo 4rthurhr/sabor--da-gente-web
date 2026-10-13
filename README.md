@@ -2,10 +2,6 @@
 
 Painel administrativo web da pizzaria **Sabor da Gente**, desenvolvido em **Next.js + React** como projeto da disciplina de **Desenvolvimento Web**.
 
-Este projeto é a parte **web (para administradores/funcionários)** do sistema. O **aplicativo mobile (para clientes)** foi desenvolvido na disciplina de Programação para Dispositivos Móveis:
-👉 [PedroSlv7/sabor-da-gente](https://github.com/PedroSlv7/sabor-da-gente)
-
-> *Mais que pizza, é sabor da gente!*
 
 ---
 
