@@ -177,7 +177,7 @@ Acesse: http://localhost:3000
 |---|---|---|
 | Arthur | [@4rthurhr](https://github.com/4rthurhr) | A definir |
 | Integrante 2 | [@Denilsonrsl](https://github.com/Denilsonrsl) | A definir |
-| Integrante 3 | [@PedroSlv](https://github.com/PedroSlv) | A definir |
+| Integrante 3 | [@PedroSlv7](https://github.com/PedroSlv7) | A definir |
 
 ---
 
