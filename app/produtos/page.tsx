@@ -34,12 +34,14 @@ export default function ProdutosPage() {
   const [ordem, setOrdem] = useState("nome");
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
+  const [mensagem, setMensagem] = useState("");
+  const [produtoEmAcao, setProdutoEmAcao] = useState<number | null>(null);
 
-  useEffect(() => {
-    async function carregarDados() {
-      setCarregando(true);
-      setErro("");
+  async function carregarDados() {
+    setCarregando(true);
+    setErro("");
 
+    try {
       const [resultadoProdutos, resultadoCategorias] = await Promise.all([
         supabase
           .from("produtos")
@@ -54,21 +56,24 @@ export default function ProdutosPage() {
           .order("ordem"),
       ]);
 
-      if (resultadoProdutos.error || resultadoCategorias.error) {
-        setErro(
-          resultadoProdutos.error?.message ??
-            resultadoCategorias.error?.message ??
-            "Não foi possível carregar os dados."
-        );
-      } else {
-        setProdutos(resultadoProdutos.data ?? []);
-        setCategorias(resultadoCategorias.data ?? []);
-      }
+      if (resultadoProdutos.error) throw resultadoProdutos.error;
+      if (resultadoCategorias.error) throw resultadoCategorias.error;
 
+      setProdutos(resultadoProdutos.data ?? []);
+      setCategorias(resultadoCategorias.data ?? []);
+    } catch (erroDesconhecido) {
+      setErro(
+        erroDesconhecido instanceof Error
+          ? erroDesconhecido.message
+          : "Não foi possível carregar os dados."
+      );
+    } finally {
       setCarregando(false);
     }
+  }
 
-    carregarDados();
+  useEffect(() => {
+    void carregarDados();
   }, []);
 
   const produtosFiltrados = useMemo(() => {
@@ -94,6 +99,90 @@ export default function ProdutosPage() {
 
     return resultado;
   }, [produtos, busca, categoriaSelecionada, ordem]);
+
+  async function alternarStatus(produto: Produto) {
+    setProdutoEmAcao(produto.id);
+    setErro("");
+    setMensagem("");
+
+    try {
+      const { data, error } = await supabase
+        .from("produtos")
+        .update({ ativo: !produto.ativo })
+        .eq("id", produto.id)
+        .select("id");
+
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        throw new Error(
+          "O banco não confirmou a alteração. Verifique as permissões de atualização."
+        );
+      }
+
+      setProdutos((atuais) =>
+        atuais.map((item) =>
+          item.id === produto.id ? { ...item, ativo: !produto.ativo } : item
+        )
+      );
+
+      setMensagem(
+        produto.ativo
+          ? `Produto "${produto.nome}" desativado com sucesso.`
+          : `Produto "${produto.nome}" ativado com sucesso.`
+      );
+    } catch (erroDesconhecido) {
+      setErro(
+        erroDesconhecido instanceof Error
+          ? erroDesconhecido.message
+          : "Não foi possível alterar o status do produto."
+      );
+    } finally {
+      setProdutoEmAcao(null);
+    }
+  }
+
+  async function excluirProduto(produto: Produto) {
+    const confirmado = window.confirm(
+      `Tem certeza de que deseja excluir "${produto.nome}"? Esta ação não pode ser desfeita. Se o produto estiver vinculado a pedidos, o banco poderá impedir a exclusão.`
+    );
+
+    if (!confirmado) return;
+
+    setProdutoEmAcao(produto.id);
+    setErro("");
+    setMensagem("");
+
+    try {
+      const { data, error } = await supabase
+        .from("produtos")
+        .delete()
+        .eq("id", produto.id)
+        .select("id");
+
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        throw new Error(
+          "O banco não confirmou a exclusão. Verifique as permissões de exclusão."
+        );
+      }
+
+      setProdutos((atuais) =>
+        atuais.filter((item) => item.id !== produto.id)
+      );
+
+      setMensagem(`Produto "${produto.nome}" excluído com sucesso.`);
+    } catch (erroDesconhecido) {
+      setErro(
+        erroDesconhecido instanceof Error
+          ? `Não foi possível excluir o produto. ${erroDesconhecido.message}`
+          : "Não foi possível excluir o produto. Se ele estiver associado a pedidos, tente desativá-lo."
+      );
+    } finally {
+      setProdutoEmAcao(null);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -136,19 +225,36 @@ export default function ProdutosPage() {
               Gerenciar produtos
             </h1>
             <p className="mt-2 text-zinc-400">
-              Consulte, pesquise e organize os produtos da pizzaria.
+              Consulte, pesquise, organize e gerencie os produtos da pizzaria.
             </p>
           </div>
 
-          <button
-            type="button"
-            disabled
-            title="Vamos habilitar o cadastro no próximo passo."
-            className="cursor-not-allowed rounded-xl bg-orange-500/40 px-5 py-3 font-semibold text-white/70"
+          <Link
+            href="/produtos/novo"
+            className="rounded-xl bg-orange-500 px-5 py-3 font-semibold text-white transition hover:bg-orange-400"
           >
             + Novo produto
-          </button>
+          </Link>
         </div>
+
+        {mensagem && (
+          <div
+            role="status"
+            className="mb-5 rounded-xl border border-emerald-500/30 bg-emerald-950/40 p-4 text-emerald-300"
+          >
+            {mensagem}
+          </div>
+        )}
+
+        {erro && (
+          <div
+            role="alert"
+            className="mb-5 rounded-xl border border-red-500/30 bg-red-950/40 p-4 text-red-300"
+          >
+            <p className="font-semibold">Ocorreu um problema</p>
+            <p className="mt-2 break-words text-sm">{erro}</p>
+          </div>
+        )}
 
         <div className="mb-6 grid gap-4 sm:grid-cols-3">
           <div className="rounded-2xl border border-white/10 bg-zinc-900 p-5">
@@ -210,10 +316,17 @@ export default function ProdutosPage() {
           </div>
         )}
 
-        {erro && (
-          <div className="rounded-2xl border border-red-500/30 bg-red-950/40 p-5 text-red-300">
-            <p className="font-semibold">Não foi possível carregar os produtos.</p>
-            <p className="mt-2 break-words text-sm">{erro}</p>
+        {!carregando && erro && (
+          <div className="rounded-2xl border border-white/10 bg-zinc-900 p-10 text-center text-zinc-400">
+            Não foi possível carregar a listagem. Confira a mensagem acima e
+            tente recarregar a página.
+            <button
+              type="button"
+              onClick={() => void carregarDados()}
+              className="mx-auto mt-4 block rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white hover:bg-orange-400"
+            >
+              Tentar novamente
+            </button>
           </div>
         )}
 
@@ -235,13 +348,14 @@ export default function ProdutosPage() {
               </div>
             ) : (
               <div className="overflow-x-auto rounded-2xl border border-white/10">
-                <table className="w-full min-w-[650px] text-left text-sm">
+                <table className="w-full min-w-[1000px] text-left text-sm">
                   <thead className="bg-zinc-900 text-zinc-400">
                     <tr>
                       <th className="px-5 py-4 font-medium">Produto</th>
                       <th className="px-5 py-4 font-medium">Tamanho</th>
                       <th className="px-5 py-4 font-medium">Preço</th>
                       <th className="px-5 py-4 font-medium">Status</th>
+                      <th className="px-5 py-4 font-medium">Ações</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10 bg-zinc-900/50">
@@ -256,6 +370,11 @@ export default function ProdutosPage() {
                             <p className="mt-1 max-w-md text-xs text-zinc-400">
                               {produto.descricao}
                             </p>
+                          )}
+                          {produto.destaque && (
+                            <span className="mt-2 inline-block rounded-full bg-orange-500/15 px-2 py-1 text-xs text-orange-300">
+                              Destaque
+                            </span>
                           )}
                         </td>
                         <td className="px-5 py-4 text-zinc-300">
@@ -274,6 +393,38 @@ export default function ProdutosPage() {
                           >
                             {produto.ativo ? "Ativo" : "Inativo"}
                           </span>
+                        </td>
+                        <td className="px-5 py-4">
+                          <div className="flex flex-wrap gap-2">
+                            <Link
+                              href={`/produtos/editar/${produto.id}`}
+                              className="rounded-lg border border-sky-500/30 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/10"
+                            >
+                              Editar
+                            </Link>
+                            <button
+                              type="button"
+                              disabled={produtoEmAcao !== null}
+                              onClick={() => void alternarStatus(produto)}
+                              className="rounded-lg border border-amber-500/30 px-3 py-2 text-xs font-semibold text-amber-300 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {produtoEmAcao === produto.id
+                                ? "Aguarde..."
+                                : produto.ativo
+                                  ? "Desativar"
+                                  : "Ativar"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={produtoEmAcao !== null}
+                              onClick={() => void excluirProduto(produto)}
+                              className="rounded-lg border border-red-500/30 px-3 py-2 text-xs font-semibold text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {produtoEmAcao === produto.id
+                                ? "Aguarde..."
+                                : "Excluir"}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
