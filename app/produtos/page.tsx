@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 
@@ -20,24 +20,21 @@ type Categoria = {
   nome: string;
 };
 
-const moeda = (centavos: number) =>
-  (centavos / 100).toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  });
+type Ordenacao = "nome" | "menor-preco" | "maior-preco";
 
 export default function ProdutosPage() {
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [busca, setBusca] = useState("");
   const [categoriaSelecionada, setCategoriaSelecionada] = useState("todas");
-  const [ordem, setOrdem] = useState("nome");
+  const [ordenacao, setOrdenacao] = useState<Ordenacao>("nome");
   const [carregando, setCarregando] = useState(true);
-  const [erro, setErro] = useState("");
+  const [produtoEmProcessamento, setProdutoEmProcessamento] =
+    useState<number | null>(null);
   const [mensagem, setMensagem] = useState("");
-  const [produtoEmAcao, setProdutoEmAcao] = useState<number | null>(null);
+  const [erro, setErro] = useState("");
 
-  async function carregarDados() {
+  const carregarDados = useCallback(async () => {
     setCarregando(true);
     setErro("");
 
@@ -48,39 +45,46 @@ export default function ProdutosPage() {
           .select(
             "id, categoria_id, nome, descricao, tamanho, preco, destaque, ativo"
           )
-          .order("nome"),
+          .order("nome", { ascending: true }),
         supabase
           .from("categorias")
           .select("id, nome")
           .eq("ativa", true)
-          .order("ordem"),
+          .order("ordem", { ascending: true }),
       ]);
 
-      if (resultadoProdutos.error) throw resultadoProdutos.error;
-      if (resultadoCategorias.error) throw resultadoCategorias.error;
+      if (resultadoProdutos.error) {
+        throw new Error(resultadoProdutos.error.message);
+      }
 
-      setProdutos(resultadoProdutos.data ?? []);
-      setCategorias(resultadoCategorias.data ?? []);
-    } catch (erroDesconhecido) {
+      if (resultadoCategorias.error) {
+        throw new Error(resultadoCategorias.error.message);
+      }
+
+      setProdutos((resultadoProdutos.data ?? []) as Produto[]);
+      setCategorias((resultadoCategorias.data ?? []) as Categoria[]);
+    } catch (error) {
       setErro(
-        erroDesconhecido instanceof Error
-          ? erroDesconhecido.message
-          : "Não foi possível carregar os dados."
+        error instanceof Error
+          ? error.message
+          : "Não foi possível carregar os produtos."
       );
     } finally {
       setCarregando(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     void carregarDados();
-  }, []);
+  }, [carregarDados]);
 
   const produtosFiltrados = useMemo(() => {
+    const termo = busca.trim().toLocaleLowerCase("pt-BR");
+
     const resultado = produtos.filter((produto) => {
       const correspondeBusca =
-        produto.nome.toLowerCase().includes(busca.toLowerCase()) ||
-        (produto.descricao ?? "").toLowerCase().includes(busca.toLowerCase());
+        produto.nome.toLocaleLowerCase("pt-BR").includes(termo) ||
+        (produto.descricao ?? "").toLocaleLowerCase("pt-BR").includes(termo);
 
       const correspondeCategoria =
         categoriaSelecionada === "todas" ||
@@ -89,69 +93,88 @@ export default function ProdutosPage() {
       return correspondeBusca && correspondeCategoria;
     });
 
-    if (ordem === "menor-preco") {
-      resultado.sort((a, b) => a.preco - b.preco);
-    } else if (ordem === "maior-preco") {
-      resultado.sort((a, b) => b.preco - a.preco);
-    } else {
-      resultado.sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
-    }
+    return resultado.sort((a, b) => {
+      if (ordenacao === "menor-preco") {
+        return a.preco - b.preco;
+      }
 
-    return resultado;
-  }, [produtos, busca, categoriaSelecionada, ordem]);
+      if (ordenacao === "maior-preco") {
+        return b.preco - a.preco;
+      }
 
-  async function alternarStatus(produto: Produto) {
-    setProdutoEmAcao(produto.id);
-    setErro("");
+      return a.nome.localeCompare(b.nome, "pt-BR");
+    });
+  }, [produtos, busca, categoriaSelecionada, ordenacao]);
+
+  const formatarPreco = (valorEmCentavos: number) =>
+    (valorEmCentavos / 100).toLocaleString("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+    });
+
+  const obterNomeCategoria = (categoriaId: number) =>
+    categorias.find((categoria) => categoria.id === categoriaId)?.nome ??
+    "Categoria indisponível";
+
+  async function alterarSituacao(produto: Produto) {
+    setProdutoEmProcessamento(produto.id);
     setMensagem("");
+    setErro("");
 
     try {
+      const novoStatus = !produto.ativo;
+
       const { data, error } = await supabase
         .from("produtos")
-        .update({ ativo: !produto.ativo })
+        .update({ ativo: novoStatus })
         .eq("id", produto.id)
-        .select("id");
+        .select("id, ativo")
+        .maybeSingle();
 
-      if (error) throw error;
+      if (error) {
+        throw new Error(error.message);
+      }
 
-      if (!data || data.length === 0) {
+      if (!data) {
         throw new Error(
-          "O banco não confirmou a alteração. Verifique as permissões de atualização."
+          "Nenhuma alteração foi realizada. Verifique as permissões do Supabase."
         );
       }
 
       setProdutos((atuais) =>
         atuais.map((item) =>
-          item.id === produto.id ? { ...item, ativo: !produto.ativo } : item
+          item.id === produto.id ? { ...item, ativo: novoStatus } : item
         )
       );
 
       setMensagem(
-        produto.ativo
-          ? `Produto "${produto.nome}" desativado com sucesso.`
-          : `Produto "${produto.nome}" ativado com sucesso.`
+        novoStatus
+          ? "Produto ativado com sucesso."
+          : "Produto desativado com sucesso."
       );
-    } catch (erroDesconhecido) {
+    } catch (error) {
       setErro(
-        erroDesconhecido instanceof Error
-          ? erroDesconhecido.message
-          : "Não foi possível alterar o status do produto."
+        error instanceof Error
+          ? error.message
+          : "Não foi possível alterar a situação do produto."
       );
     } finally {
-      setProdutoEmAcao(null);
+      setProdutoEmProcessamento(null);
     }
   }
 
   async function excluirProduto(produto: Produto) {
     const confirmado = window.confirm(
-      `Tem certeza de que deseja excluir "${produto.nome}"? Esta ação não pode ser desfeita. Se o produto estiver vinculado a pedidos, o banco poderá impedir a exclusão.`
+      `Deseja realmente excluir o produto "${produto.nome}"? Esta ação não poderá ser desfeita.`
     );
 
-    if (!confirmado) return;
+    if (!confirmado) {
+      return;
+    }
 
-    setProdutoEmAcao(produto.id);
-    setErro("");
+    setProdutoEmProcessamento(produto.id);
     setMensagem("");
+    setErro("");
 
     try {
       const { data, error } = await supabase
@@ -160,11 +183,17 @@ export default function ProdutosPage() {
         .eq("id", produto.id)
         .select("id");
 
-      if (error) throw error;
+      if (error) {
+        throw new Error(
+          error.message.includes("foreign key")
+            ? "Este produto está relacionado a outros registros e não pode ser excluído. Você pode desativá-lo."
+            : error.message
+        );
+      }
 
       if (!data || data.length === 0) {
         throw new Error(
-          "O banco não confirmou a exclusão. Verifique as permissões de exclusão."
+          "O produto não foi excluído. Verifique as permissões do Supabase."
         );
       }
 
@@ -172,75 +201,58 @@ export default function ProdutosPage() {
         atuais.filter((item) => item.id !== produto.id)
       );
 
-      setMensagem(`Produto "${produto.nome}" excluído com sucesso.`);
-    } catch (erroDesconhecido) {
+      setMensagem("Produto excluído com sucesso.");
+    } catch (error) {
       setErro(
-        erroDesconhecido instanceof Error
-          ? `Não foi possível excluir o produto. ${erroDesconhecido.message}`
-          : "Não foi possível excluir o produto. Se ele estiver associado a pedidos, tente desativá-lo."
+        error instanceof Error
+          ? error.message
+          : "Não foi possível excluir o produto."
       );
     } finally {
-      setProdutoEmAcao(null);
+      setProdutoEmProcessamento(null);
     }
   }
 
-  return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100">
-      <header className="border-b border-white/10 bg-zinc-900">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-5">
-          <Link href="/" className="text-xl font-bold text-orange-400">
-            🍕 Sabor da Gente
-          </Link>
+  const totalProdutos = produtos.length;
+  const totalAtivos = produtos.filter((produto) => produto.ativo).length;
+  const totalInativos = totalProdutos - totalAtivos;
+  const totalDestaques = produtos.filter(
+    (produto) => produto.destaque
+  ).length;
 
-          <nav className="flex flex-wrap gap-3 text-sm">
+  return (
+    <main className="min-h-screen bg-slate-950 px-4 py-8 text-white sm:px-6 lg:px-10">
+      <div className="mx-auto max-w-7xl">
+        <header className="mb-8 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
             <Link
               href="/"
-              className="rounded-lg px-4 py-2 text-zinc-300 hover:bg-white/10"
+              className="mb-3 inline-block text-sm text-orange-400 transition hover:text-orange-300"
             >
-              Painel inicial
+              ← Voltar ao início
             </Link>
-            <Link
-              href="/produtos"
-              className="rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white"
-            >
-              Produtos
-            </Link>
-            <Link
-              href="/pedidos"
-              className="rounded-lg px-4 py-2 text-zinc-300 hover:bg-white/10"
-            >
-              Pedidos
-            </Link>
-          </nav>
-        </div>
-      </header>
 
-      <section className="mx-auto max-w-7xl px-6 py-10">
-        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="mb-2 text-sm font-semibold uppercase tracking-widest text-orange-400">
-              Cardápio
-            </p>
-            <h1 className="text-3xl font-bold sm:text-4xl">
-              Gerenciar produtos
+            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+              Gerenciamento de produtos
             </h1>
-            <p className="mt-2 text-zinc-400">
-              Consulte, pesquise, organize e gerencie os produtos da pizzaria.
+
+            <p className="mt-2 text-slate-400">
+              Cadastre, consulte e gerencie os produtos da Sabor da Gente.
             </p>
           </div>
 
           <Link
             href="/produtos/novo"
-            className="rounded-xl bg-orange-500 px-5 py-3 font-semibold text-white transition hover:bg-orange-400"
+            className="inline-flex items-center justify-center rounded-xl bg-orange-500 px-5 py-3 font-semibold text-white transition hover:bg-orange-600"
           >
             + Novo produto
           </Link>
-        </div>
+        </header>
 
         {mensagem && (
           <div
             role="status"
-            className="mb-5 rounded-xl border border-emerald-500/30 bg-emerald-950/40 p-4 text-emerald-300"
+            className="mb-5 rounded-xl border border-emerald-700 bg-emerald-950/60 p-4 text-emerald-300"
           >
             {mensagem}
           </div>
@@ -249,192 +261,282 @@ export default function ProdutosPage() {
         {erro && (
           <div
             role="alert"
-            className="mb-5 rounded-xl border border-red-500/30 bg-red-950/40 p-4 text-red-300"
+            className="mb-5 rounded-xl border border-red-800 bg-red-950/60 p-4 text-red-300"
           >
             <p className="font-semibold">Ocorreu um problema</p>
-            <p className="mt-2 break-words text-sm">{erro}</p>
-          </div>
-        )}
-
-        <div className="mb-6 grid gap-4 sm:grid-cols-3">
-          <div className="rounded-2xl border border-white/10 bg-zinc-900 p-5">
-            <p className="text-sm text-zinc-400">Produtos cadastrados</p>
-            <p className="mt-2 text-3xl font-bold">{produtos.length}</p>
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-zinc-900 p-5">
-            <p className="text-sm text-zinc-400">Produtos ativos</p>
-            <p className="mt-2 text-3xl font-bold text-emerald-400">
-              {produtos.filter((produto) => produto.ativo).length}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-zinc-900 p-5">
-            <p className="text-sm text-zinc-400">Categorias</p>
-            <p className="mt-2 text-3xl font-bold">{categorias.length}</p>
-          </div>
-        </div>
-
-        <div className="mb-6 grid gap-3 rounded-2xl border border-white/10 bg-zinc-900 p-4 md:grid-cols-3">
-          <input
-            value={busca}
-            onChange={(evento) => setBusca(evento.target.value)}
-            placeholder="Pesquisar produto..."
-            aria-label="Pesquisar produto"
-            className="rounded-xl border border-white/10 bg-zinc-950 px-4 py-3 outline-none focus:border-orange-400"
-          />
-
-          <select
-            value={categoriaSelecionada}
-            onChange={(evento) => setCategoriaSelecionada(evento.target.value)}
-            aria-label="Filtrar por categoria"
-            className="rounded-xl border border-white/10 bg-zinc-950 px-4 py-3 outline-none focus:border-orange-400"
-          >
-            <option value="todas">Todas as categorias</option>
-            {categorias.map((categoria) => (
-              <option key={categoria.id} value={String(categoria.id)}>
-                {categoria.nome}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={ordem}
-            onChange={(evento) => setOrdem(evento.target.value)}
-            aria-label="Ordenar produtos"
-            className="rounded-xl border border-white/10 bg-zinc-950 px-4 py-3 outline-none focus:border-orange-400"
-          >
-            <option value="nome">Ordem alfabética</option>
-            <option value="menor-preco">Menor preço</option>
-            <option value="maior-preco">Maior preço</option>
-          </select>
-        </div>
-
-        {carregando && (
-          <div className="rounded-2xl border border-white/10 bg-zinc-900 p-10 text-center text-zinc-400">
-            Carregando produtos...
-          </div>
-        )}
-
-        {!carregando && erro && (
-          <div className="rounded-2xl border border-white/10 bg-zinc-900 p-10 text-center text-zinc-400">
-            Não foi possível carregar a listagem. Confira a mensagem acima e
-            tente recarregar a página.
+            <p className="mt-1 break-words text-sm">{erro}</p>
             <button
               type="button"
               onClick={() => void carregarDados()}
-              className="mx-auto mt-4 block rounded-lg bg-orange-500 px-4 py-2 font-semibold text-white hover:bg-orange-400"
+              className="mt-3 rounded-lg border border-red-700 px-3 py-2 text-sm transition hover:bg-red-900/50"
             >
               Tentar novamente
             </button>
           </div>
         )}
 
-        {!carregando && !erro && (
-          <>
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold">Lista de produtos</h2>
-              <span className="text-sm text-zinc-400">
-                {produtosFiltrados.length} resultado(s)
-              </span>
+        <section
+          aria-label="Resumo dos produtos"
+          className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
+        >
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Total de produtos</p>
+            <p className="mt-3 text-3xl font-bold">{totalProdutos}</p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Produtos ativos</p>
+            <p className="mt-3 text-3xl font-bold text-emerald-400">
+              {totalAtivos}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Produtos inativos</p>
+            <p className="mt-3 text-3xl font-bold text-red-400">
+              {totalInativos}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Produtos em destaque</p>
+            <p className="mt-3 text-3xl font-bold text-orange-400">
+              {totalDestaques}
+            </p>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4 sm:p-6">
+          <div className="mb-6">
+            <h2 className="text-xl font-semibold">Lista de produtos</h2>
+            <p className="mt-1 text-sm text-slate-400">
+              Pesquise, filtre e escolha uma ação para cada produto.
+            </p>
+          </div>
+
+          <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div>
+              <label
+                htmlFor="busca-produto"
+                className="mb-2 block text-sm font-medium text-slate-300"
+              >
+                Buscar produto
+              </label>
+
+              <input
+                id="busca-produto"
+                type="search"
+                value={busca}
+                onChange={(event) => setBusca(event.target.value)}
+                placeholder="Digite o nome ou a descrição..."
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-orange-500"
+              />
             </div>
 
-            {produtosFiltrados.length === 0 ? (
-              <div className="rounded-2xl border border-white/10 bg-zinc-900 p-10 text-center">
-                <p className="font-semibold">Nenhum produto encontrado.</p>
-                <p className="mt-2 text-sm text-zinc-400">
-                  Tente alterar a pesquisa ou selecionar outra categoria.
-                </p>
+            <div>
+              <label
+                htmlFor="filtro-categoria"
+                className="mb-2 block text-sm font-medium text-slate-300"
+              >
+                Filtrar por categoria
+              </label>
+
+              <select
+                id="filtro-categoria"
+                value={categoriaSelecionada}
+                onChange={(event) =>
+                  setCategoriaSelecionada(event.target.value)
+                }
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-orange-500"
+              >
+                <option value="todas">Todas as categorias</option>
+                {categorias.map((categoria) => (
+                  <option key={categoria.id} value={String(categoria.id)}>
+                    {categoria.nome}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="ordenacao"
+                className="mb-2 block text-sm font-medium text-slate-300"
+              >
+                Ordenar por
+              </label>
+
+              <select
+                id="ordenacao"
+                value={ordenacao}
+                onChange={(event) =>
+                  setOrdenacao(event.target.value as Ordenacao)
+                }
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-orange-500"
+              >
+                <option value="nome">Nome: A–Z</option>
+                <option value="menor-preco">Menor preço</option>
+                <option value="maior-preco">Maior preço</option>
+              </select>
+            </div>
+          </div>
+
+          {carregando ? (
+            <div
+              role="status"
+              className="py-16 text-center text-slate-400"
+            >
+              <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-4 border-slate-700 border-t-orange-500" />
+              Carregando produtos...
+            </div>
+          ) : produtosFiltrados.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-700 px-4 py-12 text-center">
+              <p className="text-lg font-semibold text-slate-200">
+                Nenhum produto encontrado
+              </p>
+              <p className="mt-2 text-sm text-slate-400">
+                Tente mudar a pesquisa ou os filtros, ou cadastre um novo
+                produto.
+              </p>
+              <Link
+                href="/produtos/novo"
+                className="mt-5 inline-flex rounded-xl bg-orange-500 px-5 py-3 font-semibold text-white transition hover:bg-orange-600"
+              >
+                Cadastrar produto
+              </Link>
+            </div>
+          ) : (
+            <>
+              <div className="mb-4 text-sm text-slate-400">
+                Exibindo {produtosFiltrados.length}{" "}
+                {produtosFiltrados.length === 1
+                  ? "produto"
+                  : "produtos"}
               </div>
-            ) : (
-              <div className="overflow-x-auto rounded-2xl border border-white/10">
-                <table className="w-full min-w-[1000px] text-left text-sm">
-                  <thead className="bg-zinc-900 text-zinc-400">
-                    <tr>
-                      <th className="px-5 py-4 font-medium">Produto</th>
-                      <th className="px-5 py-4 font-medium">Tamanho</th>
-                      <th className="px-5 py-4 font-medium">Preço</th>
-                      <th className="px-5 py-4 font-medium">Status</th>
-                      <th className="px-5 py-4 font-medium">Ações</th>
+
+              <div className="overflow-x-auto rounded-xl border border-slate-800">
+                <table className="w-full min-w-[1000px] border-collapse text-left">
+                  <thead className="bg-slate-950">
+                    <tr className="border-b border-slate-800 text-sm text-slate-400">
+                      <th className="px-4 py-4 font-medium">Produto</th>
+                      <th className="px-4 py-4 font-medium">Categoria</th>
+                      <th className="px-4 py-4 font-medium">Tamanho</th>
+                      <th className="px-4 py-4 font-medium">Preço</th>
+                      <th className="px-4 py-4 font-medium">Situação</th>
+                      <th className="px-4 py-4 font-medium">Destaque</th>
+                      <th className="px-4 py-4 font-medium">Ações</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-white/10 bg-zinc-900/50">
-                    {produtosFiltrados.map((produto) => (
-                      <tr
-                        key={produto.id}
-                        className="transition hover:bg-white/5"
-                      >
-                        <td className="px-5 py-4">
-                          <p className="font-semibold">{produto.nome}</p>
-                          {produto.descricao && (
-                            <p className="mt-1 max-w-md text-xs text-zinc-400">
-                              {produto.descricao}
-                            </p>
-                          )}
-                          {produto.destaque && (
-                            <span className="mt-2 inline-block rounded-full bg-orange-500/15 px-2 py-1 text-xs text-orange-300">
-                              Destaque
+
+                  <tbody className="divide-y divide-slate-800">
+                    {produtosFiltrados.map((produto) => {
+                      const ocupado =
+                        produtoEmProcessamento === produto.id;
+
+                      return (
+                        <tr
+                          key={produto.id}
+                          className="transition hover:bg-slate-800/40"
+                        >
+                          <td className="px-4 py-4">
+                            <div className="font-medium text-white">
+                              {produto.nome}
+                            </div>
+                            <div className="mt-1 max-w-xs truncate text-sm text-slate-400">
+                              {produto.descricao || "Sem descrição"}
+                            </div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              ID: {produto.id}
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-4 text-sm text-slate-300">
+                            {obterNomeCategoria(produto.categoria_id)}
+                          </td>
+
+                          <td className="px-4 py-4 text-sm text-slate-300">
+                            {produto.tamanho || "Não informado"}
+                          </td>
+
+                          <td className="whitespace-nowrap px-4 py-4 font-semibold text-orange-400">
+                            {formatarPreco(produto.preco)}
+                          </td>
+
+                          <td className="px-4 py-4">
+                            <span
+                              className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                                produto.ativo
+                                  ? "bg-emerald-950 text-emerald-300"
+                                  : "bg-red-950 text-red-300"
+                              }`}
+                            >
+                              {produto.ativo ? "Ativo" : "Inativo"}
                             </span>
-                          )}
-                        </td>
-                        <td className="px-5 py-4 text-zinc-300">
-                          {produto.tamanho ?? "—"}
-                        </td>
-                        <td className="whitespace-nowrap px-5 py-4 font-semibold text-orange-300">
-                          {moeda(produto.preco)}
-                        </td>
-                        <td className="px-5 py-4">
-                          <span
-                            className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                              produto.ativo
-                                ? "bg-emerald-500/15 text-emerald-300"
-                                : "bg-zinc-700 text-zinc-300"
-                            }`}
-                          >
-                            {produto.ativo ? "Ativo" : "Inativo"}
-                          </span>
-                        </td>
-                        <td className="px-5 py-4">
-                          <div className="flex flex-wrap gap-2">
-                            <Link
-                              href={`/produtos/editar/${produto.id}`}
-                              className="rounded-lg border border-sky-500/30 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/10"
-                            >
-                              Editar
-                            </Link>
-                            <button
-                              type="button"
-                              disabled={produtoEmAcao !== null}
-                              onClick={() => void alternarStatus(produto)}
-                              className="rounded-lg border border-amber-500/30 px-3 py-2 text-xs font-semibold text-amber-300 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {produtoEmAcao === produto.id
-                                ? "Aguarde..."
-                                : produto.ativo
-                                  ? "Desativar"
-                                  : "Ativar"}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={produtoEmAcao !== null}
-                              onClick={() => void excluirProduto(produto)}
-                              className="rounded-lg border border-red-500/30 px-3 py-2 text-xs font-semibold text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {produtoEmAcao === produto.id
-                                ? "Aguarde..."
-                                : "Excluir"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+
+                          <td className="px-4 py-4 text-sm">
+                            {produto.destaque ? (
+                              <span className="text-orange-300">
+                                ★ Sim
+                              </span>
+                            ) : (
+                              <span className="text-slate-500">Não</span>
+                            )}
+                          </td>
+
+                          <td className="px-4 py-4">
+                            <div className="flex flex-wrap gap-2">
+                              <Link
+                                href={`/produtos/${produto.id}`}
+                                className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-medium text-slate-200 transition hover:border-sky-500 hover:bg-sky-950/40 hover:text-sky-300"
+                              >
+                                Detalhes
+                              </Link>
+
+                              <Link
+                                href={`/produtos/editar/${produto.id}`}
+                                className="rounded-lg border border-orange-700 px-3 py-2 text-sm font-medium text-orange-300 transition hover:bg-orange-950/50"
+                              >
+                                Editar
+                              </Link>
+
+                              <button
+                                type="button"
+                                disabled={ocupado}
+                                onClick={() => void alterarSituacao(produto)}
+                                className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {ocupado
+                                  ? "Aguarde..."
+                                  : produto.ativo
+                                    ? "Desativar"
+                                    : "Ativar"}
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={ocupado}
+                                onClick={() => void excluirProduto(produto)}
+                                className="rounded-lg border border-red-900 px-3 py-2 text-sm font-medium text-red-300 transition hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                Excluir
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
-            )}
-          </>
-        )}
-      </section>
+            </>
+          )}
+        </section>
+
+        <footer className="mt-8 text-center text-sm text-slate-500">
+          Sabor da Gente — Gerenciamento de produtos
+        </footer>
+      </div>
     </main>
   );
 }
